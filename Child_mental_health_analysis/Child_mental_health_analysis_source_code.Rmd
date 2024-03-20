@@ -1,0 +1,244 @@
+---
+title: "CSC3031 Applied Data Science Coursework"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+date: "Student ID: 690056125"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+##LOADING REQUIRED PACKAGES##
+library(tidyverse)
+library(dplyr)
+library(sf)
+library(readxl)
+library(gridExtra)
+library(ggpubr)
+library(car)
+##
+
+##IMPORTING & FORMATTING DATA##
+filepath<-"datadownload.xlsx"
+sheetnames<-excel_sheets(filepath)[6:11]
+years<-c("2020","2019","2018","2017","2016","2015")
+
+
+#For loop to cycle import all required sheets into separate data-frames
+for( i in 1:length(sheetnames)){
+  
+  assign(sheetnames[i],
+         read_excel(filepath,sheet = sheetnames[i],range=("A5:I346"))%>%
+           select(!c(4:8))%>% #selecting only mental health column
+           mutate(year=years[i])) #adding new column for year
+  
+}
+
+#Merging all sheets into one tidy data-frame
+health_data<-bind_rows(mget(sheetnames)) %>% 
+  rename(score=`Children's social, emotional and mental health [Pe2]`,
+         `Area Type` =`Area Type [Note 3]`)#renaming columns
+
+
+#Subsetting only LTLA health data 
+ltla_health<-health_data%>%
+  filter(grepl("LTLA",`Area Type`))
+
+
+#Creating non-tidy data frame
+health_data_wider<-pivot_wider(health_data, 
+                               names_from = year,
+                               values_from = score)[,c(1,2,3,9,8,7,6,5,4)] #changing order of year columns
+##
+
+##IMPORTING SHAPEFILES & MERGING TO HEALTH DATA##
+ltla_shape<-st_read("LAD_(Dec_2020)_UK_BFC.shp")%>%
+  filter(grepl("E",LAD20CD)) #selecting only ltlas in england
+
+#Checking for area codes in data file with no shapefile & excluding data with no shapefile
+mismatch<-anti_join(ltla_health,ltla_shape,by=c("Area Code"="LAD20CD"))
+mismatch<-unique(mismatch$`Area Code`) 
+
+ltla_health_new<-filter(ltla_health,!grepl(mismatch[1],`Area Code`))%>%
+  filter(!grepl(mismatch[2],`Area Code`))
+
+#merging shapefile to health data
+england<-full_join(ltla_shape,ltla_health_new,
+                   by=c("LAD20CD"="Area Code"))
+
+#Setting NA value as 0 in year column for areas with no health data
+england$year[is.na(england$year)]<-"0"
+
+england<-england%>%
+  mutate(year=as.factor(year)) #setting year as factor
+
+##
+
+##CREATING SPATIAL PLOTS OVER TIME##
+#For loop to create separate plots for each year
+for (n in 1:length(years)){
+  
+  assign(paste0("p",n),
+         
+         filter(england,year==rev(years)[n]|year=="0")%>%
+           ggplot()+
+           geom_sf(aes(fill=score),color=NA)+
+           scale_fill_viridis_c(option="A", limits=c(60,136),name="Mental health score")+
+           ggtitle(rev(years)[n])+
+           theme(plot.title = element_text(hjust = 0.5, face="bold"),
+                 plot.margin = unit(c(0, 0, 0, 0), "pt"))
+         
+  )
+  
+}
+
+#Arranging plots into one
+spatial_plot<-ggarrange(p1,p2,p3,p4,p5,p6,ncol=3,nrow=2,common.legend=TRUE,legend = "right")
+
+##
+
+##CREATING BOXPLOTS
+box_plot<-ggplot(ltla_health)+
+  geom_boxplot(aes(x=as.factor(year),y=score,fill=as.factor(year)),
+               width=0.5)+
+                 scale_fill_brewer(palette = "BuPu")+
+  theme(legend.position = "none")+
+  ylab("Mental health score")+
+  xlab("Year")+
+  ggtitle("Distribution of mental health scores between 2015-2020")
+
+##
+
+##CREATING LINE PLOTS OVER TIME##
+#Finding all region names + country 
+region_names<-unique(health_data$`Area Name`[health_data$`Area Type` %in% c("Region","Country")])
+
+#Creating colour pallete for line plot
+pal<-c('black','#1f78b4','#b2df8a','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6','#6a3d9a')
+
+#Plotting
+line_plot<-filter(health_data,`Area Type`=="Region" | `Area Type` == "Country")%>%
+  ggplot()+
+  geom_line(aes(x=as.numeric(as.character(year)),y=score,color=`Area Name`),size=1.2)+
+  scale_color_manual(values = pal,
+                     limits = region_names)+
+  ylim(85,105)+
+  geom_hline(yintercept=100, linetype="dashed")+
+  ggtitle("Mental health scores across England regions between 2015-2020")+
+  ylab("Mental health score")+
+  xlab("Year")
+
+##
+
+##STATISTICAL ANALYSIS##
+#One-way ANOVA
+res.aov <- aov(score ~ as.factor(year), data = ltla_health)
+anova_result<-summary(res.aov)
+
+#Pairwise t-test
+pair_t<-pairwise.t.test(ltla_health$score,as.factor(ltla_health$year),
+                p.adjust.method = 'BH')
+
+#Checking assumptions of anova 
+leveneTest(score ~ as.factor(year), data = ltla_health) #testing for homogeneity of variance
+ggqqplot(ltla_health$score)#testing for normality
+
+##
+```
+
+## Introduction
+
+Poor mental health in children have often been described as an escalating crisis. Despite the advancements in global mental health awareness in recent years, child mental health have largely remained confined in the shadows. A recent survey across England found that in children aged 7-16, the rates of probable mental health disorder rose from 1 in 9 in 2017 to 1 in 6 in 2020 (1). In addition, reports suggest that there is an undeniable disparity in the risk of poor mental health outcomes between wealthier and more deprived areas (2), suggesting there may be regional differences in rates of child mental health issues.
+
+This report therefore aims to explore how children's mental health in England have changed throughout the years between 2015-2020 and how they vary across different regions/districts within the country.
+
+## Objective & methodology
+
+To answer our research question, we aim to produce a spatial map of child mental health scores across different England lower-tier local authority districts (LTLAs) between 2015-2020. We then conduct a one way ANOVA to assess the significance of differences in mental health scores between the years, making sure parametric test assumptions are met using the Levene's test for homogeneity of variance and plotting a quantile-quantile (QQ) plot to assess normality. We also conduct a post-hoc pairwise comparison t-test to determine between which years were the differences most significant. To further illustrate regional differences in child mental health scores, we plot a line graph of mental health scores between years across the 9 England regions. We plotted average regional mental health scores rather than LTLAs as there are over 300 individual LTLAs, which would not be feasible to plot in a single graph.
+
+## The data
+
+Our data was obtained from the England 2015-2020 Health Index Scores published by the Office for National Statistics. The Health Index data is made available as an Excel spreadsheet containing Health Index Scores for a variety of health indicators/outcomes such as life expectancy, physical activity, mental health disorders, diseases, etc. For our analysis, we are only interested in the children's social, emotional and mental health index score. The mental health scores are scaled to a base of 100, which represents the whole-England average score for each health indicator in 2015. Scores higher than 100 indicate better health index than the 2015 England average and scores below 100 indicate worse health. Scores 10 points above/below 100 indicate a mental health score one standard deviation above/below the England average, while scores 20 points above/below indicate a score two standard deviations above/below the average, and so on. The shapefiles/geometries required to plot our spatial map was obtained from the Office for National Statistics Open Geography Portal.
+
+We read only the Excel sheets that contained the health data scores and filtered out the index scores for the non-required health indicators, leaving only the children's mental health index scores. As each year is separated into separate sheets in the original Excel file, we merged all of them together and rearranged it into one tidy data-frame in R. Next we merged the health score data frame with the spatial shapefile data-frame based on LTLA area codes. Not all the LTLA area codes in the health score data-frame had corresponding LTLA codes in the shapefile data-frame, so we excluded those data from our analysis. On the other hand, LTLA codes in the shapefile that do not have a corresponding mental health score were assigned NAs.
+
+## Results & discussion
+
+For the full data table, see Table 1 in Appendix. 
+
+From Figure 1, we can see that in 2015, a higher proportion of England LTLAs had a mental health score higher than 100 compared to later years, with a higher proportion of lower mental health scores between 60-100 in 2020 compared to 2015. This indicates that children's mental health have generally decreased between 2015-2020 as can also be seen in Figure 2, which corroborates findings from recent surveys(1).
+
+```{r figure 1, fig.cap='Child mental health score spatial plot'}
+spatial_plot
+```
+
+\pagebreak
+
+```{r figure 2, fig.cap='Child mental health score box plot'}
+box_plot
+```
+
+Statistical analysis using the one-way ANOVA confirm that the difference in mental health scores between 2015-2020 were significant. Pair-wise comparison t-test analysis indicate that the difference in scores between 2020 and other years were all significant, with the difference between 2020 and 2015 being the most significant at p \< 2e-16.
+
+The lack of significant differences in mental health scores between 2016-2017, 2017-2018 and 2018-2019 indicate that mental health scores remained relatively similar between 2016-2019, before dropping in 2020.
+
+
+One-way ANOVA
+```{r stats anova}
+anova_result
+
+```
+
+  
+  
+Pairwise t-test
+``` {r stats t-test}
+pair_t
+
+```
+
+
+
+This can also be seen in Figure 3, where the England mental health score average (black) remained relatively steady between 2016-2018, before showing a fairly steep drop between 2018-2020. It is possible that the effect of COVID-19 quarantining measures impacted children's mental health scores around this time, which may explain the drop. This idea is supported by studies finding increased cases of childhood depression and PTSD in 2020 compared to immediately before the pandemic (3,4).
+
+```{r figures 3, fig.cap="Child mental health score line plot 2015-2020"}
+line_plot
+```
+
+However, although Figures 1-3 show a general (and significant) downward trend in child mental health scores between 2015-2020, the differences are quite small. Most scores still generally stay between 90-100, showing that there is a \<1 standard deviation decrease in mental health scores across the years, which is not very large. From both Figure 1 and Figure 3 we can see that lower mental health scores are seen in the south-west, north-eastern and coastal LTLAs/regions of England in particular, suggesting that mental health scores are not distributed equally across the country. According to the Ministry of Housing, Communities and Local Government (MHCLG) 2019 English Indices of Deprivation(5), the most deprived areas in England are also often found in the north/south-western/coastal regions, providing evidence that children's mental health may be associated with neighbourhood deprivation. This is also in line with the well-documented inequalities in health outcomes between deprived and affluent neighbourhoods (2).
+
+## Limitations
+
+One of the key limitations of our analysis is that our data on children's mental health score was assessed only from whether or not a pupil had mental, social or emotional health issues listed as their primary special education need (SEN). On one hand, this limitation is useful as it is difficult to accurately ascertain whether changes in child mental health is truly representative of changes in child mental health complications over the years, or whether it is a result of better awareness/willingness to seek help/diagnosis. By limiting our data to only cases where mental health issues is a primary SEN, which thus represents cases of substantial child mental health difficulty, it excludes the proportion of cases that may be a result of better mental health awareness and not necessarily the result of 'true' mental health issues. On the other hand, this limitation of the data is problematic as it does not take into account children who may not go to school, or those who may have mental health issues but do not have it as a primary SEN. Lack of mental health considerations as a primary SEN does not necessarily denote no mental health issues. Further to this, the Health Score Index used in our analysis is still a relatively new and experimental measure/statistic and is by no means an absolute measure of child mental health. Conclusions drawn from analysis of such data should therefore be taken with a grain of salt.
+
+In addition, some of the LTLA codes in our data do not match the LTLA codes of our shapefile, even though they may correspond to the same area, meaning we had to exclude some health score data that did not have any shapefile geometry match. This may be a result of LTLA codes/names changing over the years but unfortunately because of this, our spatial map plot contains a hole where there is no mental health data due to the mismatching LTLA codes. Ideally, we would be able to determine which LTLA codes from our health index score data file correspond to each mismatching LTLA code from our shapefile but regrettably in this instance, we have not managed to accomplish this.
+
+## Conclusion
+
+To conclude, our analysis provide indication that children's mental health have generally showed a downward trend between 2015-2020 with a sharper drop in mental health scores between 2018-2020. We also found that there were regional differences in mental health scores, with north-eastern and south-western areas showing lower mental health scores on average. However, our analysis is limited by the nature of our data and more robust/absolute measurements of child mental health would be required in order to draw concrete conclusions.
+
+\pagebreak
+
+## References
+
+1.  Mental Health of Children and Young People in England 2022 -wave 3 follow up to the 2017 survey [Internet]. NDRS. Available from: <https://digital.nhs.uk/data-and-information/publications/statistical/mental-health-of-children-and-young-people-in-england/2022-follow-up-to-the-2017-survey#resources>
+
+2.  Institute of Health Equity. Fair Society Healthy Lives (The Marmot Review) - Institute of Health Equity [Internet]. Institute of HealthEquity. 2010. Available from: <https://www.instituteofhealthequity.org/resources-reports/fair-society-healthy-lives-the-marmot-review>
+
+3.  Bignardi G, Dalmaijer ES, Anwyl-Irvine AL, Smith TA, Siugzdaite R, Uh S, et al. Longitudinal increases in childhood depression during the COVID-19 lockdown in a UK cohort. 2020 Jul 10.
+
+4.  Newlove‐Delgado T. Commentary: "Levelling down" or "building back fairer"? A commentary/reflection on Wright et al. (2021). JCPP Advances. 2021 Apr;1(1).
+
+5.  Ministry of Housing, Communities & Local Government. English indices of deprivation 2019 [Internet]. GOV.UK. 2019. Available from: <https://www.gov.uk/government/statistics/english-indices-of-deprivation-2019>
+
+\pagebreak
+
+## Appendix 
+
+```{r data table}
+knitr::kable(health_data_wider,
+             caption="Mental health scores for each England LTLA 2015-2020")
+```
+
